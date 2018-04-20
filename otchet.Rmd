@@ -1,0 +1,197 @@
+---
+title: "Мат. моделирование. Упражнение №6"
+author: "Розумнюк А.А."
+date: '19 апреля 2018 г '
+output: html_document
+---
+# Упражнение 6
+### Регуляризация линейных моделей
+
+В домашней работе необходимо:
+
+1. Применить отбор путём пошагового включения к набору данных Auto {ISLR}. Выбрать оптимальную модель с помощью кросс-валидации. Вывести её коэффициенты с помощью функции coef(). Рассчитать MSE модели на тестовой выборке.
+
+2. Применить частный метод наименьших квадратов к набору данных Auto {ISLR}. Для модели:
+
+- Подогнать модель на всей выборке и вычислить ошибку (MSE) с кросс-валидацией. По наименьшей MSE подобрать оптимальное значение настроечного параметра метода. 
+
+- Подогнать модель с оптимальным значением параметра на обучающей выборке, посчитать MSE на тестовой.
+
+- Подогнать модель с оптимальным значением параметра на всех данных, вывести характеристики модели функцией summary().
+
+3 Сравнить оптимальные модели, полученные в заданиях 1 и 2 по MSE на тестовой выборке. Какой метод дал лучший результат? Доля тестовой выборки: 50%.
+
+```{r }
+library('ISLR')              # набор данных Auto
+library('leaps')             # функция regsubset() -- отбор оптимального 
+                             #  подмножества переменных
+library('glmnet')            # функция glmnet() -- лассо
+library('pls')               # регрессия на главные компоненты -- pcr()
+                             #  и частный МНК -- plsr()
+
+my.seed <- 1
+str(Auto)
+Auto <- Auto[,-9] #исключаем name
+
+# считаем пропуски
+sum(is.na(Auto$origin))
+
+```
+
+### Отбор путём пошагового исключения переменных
+
+```{r }
+#пошаговое включение
+regfit.bwd <- regsubsets(mpg ~ ., data = Auto,
+                         nvmax = 8, method = 'backward')
+summary(regfit.bwd)
+
+round(coef(regfit.bwd, 6), 3)
+
+
+```
+
+### Проверка кросс-валидацией
+
+```{r }
+# функция для прогноза для функции regsubset()
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[, xvars] %*% coefi
+}
+
+# отбираем 10 блоков наблюдений
+k <- 10
+set.seed(my.seed)
+folds <- sample(1:k, nrow(Auto), replace = T)
+
+# заготовка под матрицу с ошибками
+cv.errors <- matrix(NA, k, 7, dimnames = list(NULL, paste(1:7)))
+
+# заполняем матрицу в цикле по блокам данных
+for (j in 1:k){
+  best.fit <- regsubsets(mpg ~ ., data = Auto[folds != j, ],
+                         nvmax = 7)
+  # теперь цикл по количеству объясняющих переменных
+  for (i in 1:7){
+    # модельные значения mpg
+    pred <- predict(best.fit, Auto[folds == j, ], id = i)
+    # вписываем ошибку в матрицу
+    cv.errors[j, i] <- mean((Auto$mpg[folds == j] - pred)^2)
+  }
+}
+
+# усредняем матрицу по каждому столбцу (т.е. по блокам наблюдений), 
+# чтобы получить оценку MSE для каждой модели с фиксированным 
+# количеством объясняющих переменных
+mean.cv.errors <- apply(cv.errors, 2,
+                        mean)
+round(mean.cv.errors, 3)
+
+# на графике
+plot(mean.cv.errors, type = 'b')
+points(which.min(mean.cv.errors), mean.cv.errors[which.min(mean.cv.errors)],
+       col = 'red', pch = 20, cex = 2)
+
+```
+
+K-кратная кросс-валидация показала, что наименьшая ошибка выходит, если все предикторы включены в модель.
+
+### Гребневая регрессия
+
+```{r }
+train <- sample(c(T, F), nrow(Auto), rep = T)
+test <- !train
+# из-за синтаксиса glmnet() формируем явно матрицу объясняющих...
+x <- model.matrix(mpg ~ ., Auto)[,-1]
+
+# и вектор значений зависимой переменной
+y <- Auto$mpg
+y.test <- y[test]
+
+# вектор значений гиперпараметра лямбда
+grid <- 10^seq(10, -2, length = 100)
+
+# подгоняем серию моделей ридж-регрессии
+ridge.mod <- glmnet(x, y, alpha = 0, lambda = grid)
+
+# размерность матрицы коэффициентов моделей
+dim(coef(ridge.mod))
+
+# значение лямбда под номером 50
+round(ridge.mod$lambda[50], 0)
+
+# коэффициенты соответствующей модели
+round(coef(ridge.mod)[, 50], 3)
+
+# норма эль-два
+round(sqrt(sum(coef(ridge.mod)[-1, 50]^2)), 2)
+
+# всё то же для лямбды под номером 60
+# значение лямбда под номером 50
+round(ridge.mod$lambda[60], 0)
+
+# коэффициенты соответствующей модели
+round(coef(ridge.mod)[, 60], 3)
+
+# норма эль-два
+round(sqrt(sum(coef(ridge.mod)[-1, 60]^2)), 1)
+
+# мы можем получить значения коэффициентов для новой лямбды
+round(predict(ridge.mod, s = 50, type = 'coefficients')[1:8, ], 3)
+
+# Метод проверочной выборки
+
+set.seed(my.seed)
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- -train
+y.test <- y[test]
+
+# подгоняем ридж-модели с большей точностью (thresh ниже значения по умолчанию)
+ridge.mod <- glmnet(x[train, ], y[train], alpha = 0, lambda = grid,
+                    thresh = 1e-12)
+plot(ridge.mod)
+
+# прогнозы для модели с лямбда = 4
+ridge.pred <- predict(ridge.mod, s = 4, newx = x[test, ])
+round(mean((ridge.pred - y.test)^2), 0)
+
+# сравним с MSE для нулевой модели (прогноз = среднее)
+round(mean((mean(y[train]) - y.test)^2), 0)
+
+# насколько модель с лямбда = 4 отличается от обычной ПЛР
+ridge.pred <- predict(ridge.mod, s = 0, newx = x[test, ], exact = T,
+                      x = x[train, ], y = y[train])
+round(mean((ridge.pred - y.test)^2), 0)
+
+# predict с лямбдой (s) = 0 даёт модель ПЛР
+lm(y ~ x, subset = train)
+
+round(predict(ridge.mod, s = 0, exact = T, type = 'coefficients',
+              x = x[train, ], y = y[train])[1:8, ], 3)
+
+# Подбор оптимального значения лямбда с помощью перекрёстной проверки
+# k-кратная кросс-валидация
+set.seed(my.seed)
+# оценка ошибки
+cv.out <- cv.glmnet(x[train, ], y[train], alpha = 0)
+plot(cv.out)
+
+# значение лямбда, обеспечивающее минимальную ошибку перекрёстной проверки
+bestlam <- cv.out$lambda.min
+round(bestlam, 0)
+
+# MSE на тестовой для этого значения лямбды
+ridge.pred <- predict(ridge.mod, s = bestlam, newx = x[test, ])
+round(mean((ridge.pred - y.test)^2), 0)
+
+# наконец, подгоняем модель для оптимальной лямбды, 
+#  найденной по перекрёстной проверке
+out <- glmnet(x, y, alpha = 0)
+round(predict(out, type = 'coefficients', s = bestlam)[1:8, ], 3)
+
+```
+MSE на тестовой выборке методом пошагового исключения является 11,389, в то время как MSE модели, полученной методом гребневой регрессии равна 12. Поэтому лучшей моделью является модель, построенная методом пошагового исключения предикторов
